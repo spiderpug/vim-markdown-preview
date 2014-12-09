@@ -33,13 +33,9 @@ function! PreviewMKD()
       </head>
       <body>
 
-        <h4 id="title">
-          #{File.basename(name)}
-        </h4>
-
-        <div id="content">
+        <article class="markdown-body">
           #{Kramdown::Document.new(text).to_html}
-        </div>
+        </article>
       </body>
     </html>
     LAYOUT
