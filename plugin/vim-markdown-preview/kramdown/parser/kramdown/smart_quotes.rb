@@ -1,55 +1,13 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 #--
-# Parts of this file are based on code from Maruku by Andrea Censi.
-# The needed license statements follow:
-#
-#   Copyright (C) 2006  Andrea Censi  <andrea (at) rubyforge.org>
-#
-#   Maruku is free software; you can redistribute it and/or modify
-#   it under the terms of the GNU General Public License as published by
-#   the Free Software Foundation; either version 2 of the License, or
-#   (at your option) any later version.
-#
-#   Maruku is distributed in the hope that it will be useful,
-#   but WITHOUT ANY WARRANTY; without even the implied warranty of
-#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#   GNU General Public License for more details.
-#
-#   You should have received a copy of the GNU General Public License
-#   along with Maruku; if not, write to the Free Software
-#   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-#
-# NOTA BENE:
-#
-# The following algorithm is a rip-off of RubyPants written by
-# Christian Neukirchen.
-#
-# RubyPants is a Ruby port of SmartyPants written by John Gruber.
-#
-# This file is distributed under the GPL, which I guess is compatible
-# with the terms of the RubyPants license.
-#
-# -- Andrea Censi
+# Parts of this file are based on code from RubyPants:
 #
 # = RubyPants -- SmartyPants ported to Ruby
 #
@@ -164,6 +122,7 @@ module Kramdown
       SQ_CLOSE = %![^\ \\\\\t\r\n\\[{(-]!
 
       SQ_RULES = [
+                  [/("|')(?=[_*]{1,2}\S)/, [:lquote1]],
                   [/("|')(?=#{SQ_PUNCT}\B)/, [:rquote1]],
                   # Special case for double sets of quotes, e.g.:
                   #   <p>He said, "'Quoted' words in a larger quote."</p>
@@ -197,13 +156,14 @@ module Kramdown
 
       # Parse the smart quotes at current location.
       def parse_smart_quotes
-        regexp, substs = SQ_RULES.find {|reg, subst| @src.scan(reg)}
+        start_line_number = @src.current_line_number
+        substs = SQ_RULES.find {|reg, subst| @src.scan(reg)}[1]
         substs.each do |subst|
           if subst.kind_of?(Integer)
-            add_text(@src[subst].to_s)
+            add_text(@src[subst])
           else
             val = SQ_SUBSTS[[subst, @src[subst.to_s[-1,1].to_i]]] || subst
-            @tree.children << Element.new(:smart_quote, val)
+            @tree.children << Element.new(:smart_quote, val, nil, :location => start_line_number)
           end
         end
       end

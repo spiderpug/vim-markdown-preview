@@ -1,105 +1,105 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
 require 'rexml/parsers/baseparser'
+require 'kramdown/parser/html'
 
 module Kramdown
 
   module Converter
 
     # Converts a Kramdown::Document to HTML.
+    #
+    # You can customize the HTML converter by sub-classing it and overriding the +convert_NAME+
+    # methods. Each such method takes the following parameters:
+    #
+    # [+el+] The element of type +NAME+ to be converted.
+    #
+    # [+indent+] A number representing the current amount of spaces for indent (only used for
+    #            block-level elements).
+    #
+    # The return value of such a method has to be a string containing the element +el+ formatted as
+    # HTML element.
     class Html < Base
 
-      include ::Kramdown::Utils::HTML
+      include ::Kramdown::Utils::Html
+      include ::Kramdown::Parser::Html::Constants
 
-      # DEPRECATED: use #html_attributes
-      def options_for_element(el)
-        warn("DEPRECATION WARNING: this method will be deprecated in the next release, use #html_attributes instead")
-        html_attributes(el)
-      end
-
-      # :stopdoc:
-
-      # Defines the amount of indentation used when nesting HTML tags.
-      INDENTATION = 2
-
-      begin
-        require 'coderay'
-
-        # Highlighting via coderay is available if this constant is +true+.
-        HIGHLIGHTING_AVAILABLE = true
-      rescue LoadError => e
-        HIGHLIGHTING_AVAILABLE = false
-      end
+      # The amount of indentation used when nesting HTML tags.
+      attr_accessor :indent
 
       # Initialize the HTML converter with the given Kramdown document +doc+.
-      def initialize(doc)
+      def initialize(root, options)
         super
-        @footnote_counter = @footnote_start = @doc.options[:footnote_nr]
+        @footnote_counter = @footnote_start = @options[:footnote_nr]
         @footnotes = []
+        @footnotes_by_name = {}
+        @footnote_location = nil
         @toc = []
         @toc_code = nil
+        @indent = 2
+        @stack = []
       end
 
-      def convert(el, indent = -INDENTATION, opts = {})
-        send("convert_#{el.type}", el, indent, opts)
+      # The mapping of element type to conversion method.
+      DISPATCHER = Hash.new {|h,k| h[k] = "convert_#{k}"}
+
+      # Dispatch the conversion of the element +el+ to a +convert_TYPE+ method using the +type+ of
+      # the element.
+      def convert(el, indent = -@indent)
+        send(DISPATCHER[el.type], el, indent)
       end
 
-      def inner(el, indent, opts)
+      # Return the converted content of the children of +el+ as a string. The parameter +indent+ has
+      # to be the amount of indentation used for the element +el+.
+      #
+      # Pushes +el+ onto the @stack before converting the child elements and pops it from the stack
+      # afterwards.
+      def inner(el, indent)
         result = ''
-        indent += INDENTATION
+        indent += @indent
+        @stack.push(el)
         el.children.each do |inner_el|
-          result << send("convert_#{inner_el.type}", inner_el, indent, opts)
+          result << send(DISPATCHER[inner_el.type], inner_el, indent)
         end
+        @stack.pop
         result
       end
 
-      def convert_blank(el, indent, opts)
+      def convert_blank(el, indent)
         "\n"
       end
 
-      def convert_text(el, indent, opts)
+      def convert_text(el, indent)
         escape_html(el.value, :text)
       end
 
-      def convert_p(el, indent, opts)
+      def convert_p(el, indent)
         if el.options[:transparent]
-          "#{inner(el, indent, opts)}"
+          inner(el, indent)
         else
-          "#{' '*indent}<p#{html_attributes(el)}>#{inner(el, indent, opts)}</p>\n"
+          format_as_block_html(el.type, el.attr, inner(el, indent), indent)
         end
       end
 
-      def convert_codeblock(el, indent, opts)
-        if el.options[:attr] && el.options[:attr]['lang'] && HIGHLIGHTING_AVAILABLE
-          el = Marshal.load(Marshal.dump(el)) # so that the original is not changed
-          opts = {:wrap => @doc.options[:coderay_wrap], :line_numbers => @doc.options[:coderay_line_numbers],
-            :line_number_start => @doc.options[:coderay_line_number_start], :tab_width => @doc.options[:coderay_tab_width],
-            :bold_every => @doc.options[:coderay_bold_every], :css => @doc.options[:coderay_css]}
-          result = CodeRay.scan(el.value, el.options[:attr].delete('lang').to_sym).html(opts).chomp + "\n"
-          "#{' '*indent}<div#{html_attributes(el)}>#{result}#{' '*indent}</div>\n"
+      def convert_codeblock(el, indent)
+        attr = el.attr.dup
+        lang = extract_code_language!(attr)
+        highlighted_code = highlight_code(el.value, lang, :block)
+
+        if highlighted_code
+          add_syntax_highlighter_to_class_attr(attr)
+          "#{' '*indent}<div#{html_attributes(attr)}>#{highlighted_code}#{' '*indent}</div>\n"
         else
           result = escape_html(el.value)
-          if el.options[:attr] && el.options[:attr].has_key?('class') && el.options[:attr]['class'] =~ /\bshow-whitespaces\b/
+          result.chomp!
+          if el.attr['class'].to_s =~ /\bshow-whitespaces\b/
             result.gsub!(/(?:(^[ \t]+)|([ \t]+$)|([ \t]+))/) do |m|
               suffix = ($1 ? '-l' : ($2 ? '-r' : ''))
               m.scan(/./).map do |c|
@@ -110,45 +110,49 @@ module Kramdown
               end.join('')
             end
           end
-          "#{' '*indent}<pre#{html_attributes(el)}><code>#{result}#{result =~ /\n\Z/ ? '' : "\n"}</code></pre>\n"
+          code_attr = {}
+          code_attr['class'] = "language-#{lang}" if lang
+          "#{' '*indent}<pre#{html_attributes(attr)}><code#{html_attributes(code_attr)}>#{result}\n</code></pre>\n"
         end
       end
 
-      def convert_blockquote(el, indent, opts)
-        "#{' '*indent}<blockquote#{html_attributes(el)}>\n#{inner(el, indent, opts)}#{' '*indent}</blockquote>\n"
+      def convert_blockquote(el, indent)
+        format_as_indented_block_html(el.type, el.attr, inner(el, indent), indent)
       end
 
-      def convert_header(el, indent, opts)
-        el = Marshal.load(Marshal.dump(el)) # so that the original is not changed
-        if @doc.options[:auto_ids] && !(el.options[:attr] && el.options[:attr]['id'])
-          (el.options[:attr] ||= {})['id'] = generate_id(el.options[:raw_text])
+      def convert_header(el, indent)
+        attr = el.attr.dup
+        if @options[:auto_ids] && !attr['id']
+          attr['id'] = generate_id(el.options[:raw_text])
         end
-        @toc << [el.options[:level], el.options[:attr]['id'], el.children] if el.options[:attr] && el.options[:attr]['id'] && within_toc_depth?(el)
-        "#{' '*indent}<h#{el.options[:level]}#{html_attributes(el)}>#{inner(el, indent, opts)}</h#{el.options[:level]}>\n"
+        @toc << [el.options[:level], attr['id'], el.children] if attr['id'] && in_toc?(el)
+        level = output_header_level(el.options[:level])
+        format_as_block_html("h#{level}", attr, inner(el, indent), indent)
       end
 
-      def within_toc_depth?(el)
-        @doc.options[:toc_depth] <= 0 || el.options[:level] <= @doc.options[:toc_depth]
+      def convert_hr(el, indent)
+        "#{' '*indent}<hr#{html_attributes(el.attr)} />\n"
       end
 
-      def convert_hr(el, indent, opts)
-        "#{' '*indent}<hr />\n"
-      end
-
-      def convert_ul(el, indent, opts)
-        if !@toc_code && (el.options[:ial][:refs].include?('toc') rescue nil) && (el.type == :ul || el.type == :ol)
-          @toc_code = [el.type, el.options[:attr], (0..128).to_a.map{|a| rand(36).to_s(36)}.join]
+      def convert_ul(el, indent)
+        if !@toc_code && (el.options[:ial][:refs].include?('toc') rescue nil)
+          @toc_code = [el.type, el.attr, (0..128).to_a.map{|a| rand(36).to_s(36)}.join]
           @toc_code.last
+        elsif !@footnote_location && el.options[:ial] && (el.options[:ial][:refs] || []).include?('footnotes')
+          @footnote_location = (0..128).to_a.map{|a| rand(36).to_s(36)}.join
         else
-          "#{' '*indent}<#{el.type}#{html_attributes(el)}>\n#{inner(el, indent, opts)}#{' '*indent}</#{el.type}>\n"
+          format_as_indented_block_html(el.type, el.attr, inner(el, indent), indent)
         end
       end
       alias :convert_ol :convert_ul
-      alias :convert_dl :convert_ul
 
-      def convert_li(el, indent, opts)
-        output = ' '*indent << "<#{el.type}" << html_attributes(el) << ">"
-        res = inner(el, indent, opts)
+      def convert_dl(el, indent)
+        format_as_indented_block_html(el.type, el.attr, inner(el, indent), indent)
+      end
+
+      def convert_li(el, indent)
+        output = ' '*indent << "<#{el.type}" << html_attributes(el.attr) << ">"
+        res = inner(el, indent)
         if el.children.empty? || (el.children.first.type == :p && el.children.first.options[:transparent])
           output << res << (res =~ /\n\Z/ ? ' '*indent : '')
         else
@@ -158,69 +162,66 @@ module Kramdown
       end
       alias :convert_dd :convert_li
 
-      def convert_dt(el, indent, opts)
-        "#{' '*indent}<dt#{html_attributes(el)}>#{inner(el, indent, opts)}</dt>\n"
+      def convert_dt(el, indent)
+        format_as_block_html(el.type, el.attr, inner(el, indent), indent)
       end
 
-      HTML_TAGS_WITH_BODY=['div', 'script']
-
-      def convert_html_element(el, indent, opts)
-        res = inner(el, indent, opts)
+      def convert_html_element(el, indent)
+        res = inner(el, indent)
         if el.options[:category] == :span
-          "<#{el.value}#{html_attributes(el)}" << (!res.empty? ? ">#{res}</#{el.value}>" : " />")
+          "<#{el.value}#{html_attributes(el.attr)}" << (res.empty? && HTML_ELEMENTS_WITHOUT_BODY.include?(el.value) ? " />" : ">#{res}</#{el.value}>")
         else
           output = ''
-          output << ' '*indent if !el.options[:parent_is_raw]
-          output << "<#{el.value}#{html_attributes(el)}"
-          if !res.empty? && el.options[:parse_type] != :block
+          output << ' '*indent if @stack.last.type != :html_element || @stack.last.options[:content_model] != :raw
+          output << "<#{el.value}#{html_attributes(el.attr)}"
+          if el.options[:is_closed] && el.options[:content_model] == :raw
+            output << " />"
+          elsif !res.empty? && el.options[:content_model] != :block
             output << ">#{res}</#{el.value}>"
           elsif !res.empty?
-            output << ">\n#{res}"  << ' '*indent << "</#{el.value}>"
-          elsif HTML_TAGS_WITH_BODY.include?(el.value)
-            output << "></#{el.value}>"
-          else
+            output << ">\n#{res.chomp}\n"  << ' '*indent << "</#{el.value}>"
+          elsif HTML_ELEMENTS_WITHOUT_BODY.include?(el.value)
             output << " />"
+          else
+            output << "></#{el.value}>"
           end
-          output << "\n" if el.options[:outer_element] || !el.options[:parent_is_raw]
+          output << "\n" if @stack.last.type != :html_element || @stack.last.options[:content_model] != :raw
           output
         end
       end
 
-      def convert_xml_comment(el, indent, opts)
-        if el.options[:category] == :block && !el.options[:parent_is_raw]
-          ' '*indent + el.value + "\n"
+      def convert_xml_comment(el, indent)
+        if el.options[:category] == :block && (@stack.last.type != :html_element || @stack.last.options[:content_model] != :raw)
+          ' '*indent << el.value << "\n"
         else
           el.value
         end
       end
       alias :convert_xml_pi :convert_xml_comment
-      alias :convert_html_doctype :convert_xml_comment
 
-      def convert_table(el, indent, opts)
-        if el.options[:alignment].all? {|a| a == :default}
-          alignment = ''
-        else
-          alignment = el.options[:alignment].map do |a|
-            "#{' '*(indent + INDENTATION)}" + (a == :default ? "<col />" : "<col align=\"#{a}\" />") + "\n"
-          end.join('')
+      def convert_table(el, indent)
+        format_as_indented_block_html(el.type, el.attr, inner(el, indent), indent)
+      end
+      alias :convert_thead :convert_table
+      alias :convert_tbody :convert_table
+      alias :convert_tfoot :convert_table
+      alias :convert_tr  :convert_table
+
+      ENTITY_NBSP = ::Kramdown::Utils::Entities.entity('nbsp') # :nodoc:
+
+      def convert_td(el, indent)
+        res = inner(el, indent)
+        type = (@stack[-2].type == :thead ? :th : :td)
+        attr = el.attr
+        alignment = @stack[-3].options[:alignment][@stack.last.children.index(el)]
+        if alignment != :default
+          attr = el.attr.dup
+          attr['style'] = (attr.has_key?('style') ? "#{attr['style']}; ": '') << "text-align: #{alignment}"
         end
-        "#{' '*indent}<table#{html_attributes(el)}>\n#{alignment}#{inner(el, indent, opts)}#{' '*indent}</table>\n"
+        format_as_block_html(type, attr, res.empty? ? entity_to_str(ENTITY_NBSP) : res, indent)
       end
 
-      def convert_thead(el, indent, opts)
-        "#{' '*indent}<#{el.type}#{html_attributes(el)}>\n#{inner(el, indent, opts)}#{' '*indent}</#{el.type}>\n"
-      end
-      alias :convert_tbody :convert_thead
-      alias :convert_tfoot :convert_thead
-      alias :convert_tr  :convert_thead
-
-      def convert_td(el, indent, opts)
-        res = inner(el, indent, opts)
-        "#{' '*indent}<#{el.type}#{html_attributes(el)}>#{res.empty? ? "&nbsp;" : res}</#{el.type}>\n"
-      end
-      alias :convert_th :convert_td
-
-      def convert_comment(el, indent, opts)
+      def convert_comment(el, indent)
         if el.options[:category] == :block
           "#{' '*indent}<!-- #{el.value} -->\n"
         else
@@ -228,49 +229,67 @@ module Kramdown
         end
       end
 
-      def convert_br(el, indent, opts)
+      def convert_br(el, indent)
         "<br />"
       end
 
-      def convert_a(el, indent, opts)
-        do_obfuscation = el.options[:attr]['href'] =~ /^mailto:/
-        if do_obfuscation
-          el = Marshal.load(Marshal.dump(el)) # so that the original is not changed
-          href = obfuscate(el.options[:attr]['href'].sub(/^mailto:/, ''))
-          mailto = obfuscate('mailto')
-          el.options[:attr]['href'] = "#{mailto}:#{href}"
+      def convert_a(el, indent)
+        res = inner(el, indent)
+        attr = el.attr.dup
+        if attr['href'].start_with?('mailto:')
+          mail_addr = attr['href'][7..-1]
+          attr['href'] = obfuscate('mailto') << ":" << obfuscate(mail_addr)
+          res = obfuscate(res) if res == mail_addr
         end
-        res = inner(el, indent, opts)
-        res = obfuscate(res) if do_obfuscation
-        "<a#{html_attributes(el)}>#{res}</a>"
+        format_as_span_html(el.type, attr, res)
       end
 
-      def convert_img(el, indent, opts)
-        "<img#{html_attributes(el)} />"
+      def convert_img(el, indent)
+        "<img#{html_attributes(el.attr)} />"
       end
 
-      def convert_codespan(el, indent, opts)
-        "<code#{html_attributes(el)}>#{escape_html(el.value)}</code>"
+      def convert_codespan(el, indent)
+        attr = el.attr.dup
+        lang = extract_code_language(attr)
+        result = highlight_code(el.value, lang, :span)
+        if result
+          add_syntax_highlighter_to_class_attr(attr)
+        else
+          result = escape_html(el.value)
+        end
+
+        format_as_span_html('code', attr, result)
       end
 
-      def convert_footnote(el, indent, opts)
-        number = @footnote_counter
-        @footnote_counter += 1
-        @footnotes << [el.options[:name], @doc.parse_infos[:footnotes][el.options[:name]]]
-        "<sup id=\"fnref:#{el.options[:name]}\"><a href=\"#fn:#{el.options[:name]}\" rel=\"footnote\">#{number}</a></sup>"
+      def convert_footnote(el, indent)
+        repeat = ''
+        if (footnote = @footnotes_by_name[el.options[:name]])
+          number = footnote[2]
+          repeat = ":#{footnote[3] += 1}"
+        else
+          number = @footnote_counter
+          @footnote_counter += 1
+          @footnotes << [el.options[:name], el.value, number, 0]
+          @footnotes_by_name[el.options[:name]] = @footnotes.last
+        end
+        "<sup id=\"fnref:#{el.options[:name]}#{repeat}\"><a href=\"#fn:#{el.options[:name]}\" class=\"footnote\">#{number}</a></sup>"
       end
 
-      def convert_raw(el, indent, opts)
-        el.value + (el.options[:category] == :block ? "\n" : '')
+      def convert_raw(el, indent)
+        if !el.options[:type] || el.options[:type].empty? || el.options[:type].include?('html')
+          el.value + (el.options[:category] == :block ? "\n" : '')
+        else
+          ''
+        end
       end
 
-      def convert_em(el, indent, opts)
-        "<#{el.type}#{html_attributes(el)}>#{inner(el, indent, opts)}</#{el.type}>"
+      def convert_em(el, indent)
+        format_as_span_html(el.type, el.attr, inner(el, indent))
       end
       alias :convert_strong :convert_em
 
-      def convert_entity(el, indent, opts)
-        entity_to_str(el.value)
+      def convert_entity(el, indent)
+        entity_to_str(el.value, el.options[:original])
       end
 
       TYPOGRAPHIC_SYMS = {
@@ -281,34 +300,37 @@ module Kramdown
         :raquo_space => [::Kramdown::Utils::Entities.entity('nbsp'), ::Kramdown::Utils::Entities.entity('raquo')],
         :laquo => [::Kramdown::Utils::Entities.entity('laquo')],
         :raquo => [::Kramdown::Utils::Entities.entity('raquo')]
-      }
-      def convert_typographic_sym(el, indent, opts)
+      } # :nodoc:
+      def convert_typographic_sym(el, indent)
         TYPOGRAPHIC_SYMS[el.value].map {|e| entity_to_str(e)}.join('')
       end
 
-      def convert_smart_quote(el, indent, opts)
-        entity_to_str(::Kramdown::Utils::Entities.entity(el.value.to_s))
+      def convert_smart_quote(el, indent)
+        entity_to_str(smart_quote_entity(el))
       end
 
-      def convert_math(el, indent, opts)
-        el = Marshal.load(Marshal.dump(el)) # so that the original is not changed
-        el.options[:attr] ||= {}
-        el.options[:attr]['class'] ||= ''
-        el.options[:attr]['class'] += (el.options[:attr]['class'].empty? ? '' : ' ') + 'math'
-        type = 'span'
-        type = 'div' if el.options[:category] == :block
-        "<#{type}#{html_attributes(el)}>#{escape_html(el.value)}</#{type}>#{type == 'div' ? "\n" : ''}"
+      def convert_math(el, indent)
+        if (result = format_math(el, :indent => indent))
+          result
+        elsif el.options[:category] == :block
+          format_as_block_html('pre', el.attr, "$$\n#{el.value}\n$$", indent)
+        else
+          format_as_span_html('span', el.attr, "$#{el.value}$")
+        end
       end
 
-      def convert_abbreviation(el, indent, opts)
-        title = @doc.parse_infos[:abbrev_defs][el.value]
-        title = nil if title.empty?
-        "<abbr#{title ? " title=\"#{title}\"" : ''}>#{el.value}</abbr>"
+      def convert_abbreviation(el, indent)
+        title = @root.options[:abbrev_defs][el.value]
+        format_as_span_html("abbr", {:title => (title.empty? ? nil : title)}, el.value)
       end
 
-      def convert_root(el, indent, opts)
-        result = inner(el, indent, opts)
-        result << footnote_content
+      def convert_root(el, indent)
+        result = inner(el, indent)
+        if @footnote_location
+          result.sub!(/#{@footnote_location}/, footnote_content)
+        else
+          result << footnote_content
+        end
         if @toc_code
           toc_tree = generate_toc_tree(@toc, @toc_code[0], @toc_code[1] || {})
           text = if toc_tree.children.size > 0
@@ -321,14 +343,39 @@ module Kramdown
         result
       end
 
+      # Format the given element as span HTML.
+      def format_as_span_html(name, attr, body)
+        "<#{name}#{html_attributes(attr)}>#{body}</#{name}>"
+      end
+
+      # Format the given element as block HTML.
+      def format_as_block_html(name, attr, body, indent)
+        "#{' '*indent}<#{name}#{html_attributes(attr)}>#{body}</#{name}>\n"
+      end
+
+      # Format the given element as block HTML with a newline after the start tag and indentation
+      # before the end tag.
+      def format_as_indented_block_html(name, attr, body, indent)
+        "#{' '*indent}<#{name}#{html_attributes(attr)}>\n#{body}#{' '*indent}</#{name}>\n"
+      end
+
+      # Add the syntax highlighter name to the 'class' attribute of the given attribute hash.
+      def add_syntax_highlighter_to_class_attr(attr)
+        (attr['class'] = (attr['class'] || '') + " highlighter-#{@options[:syntax_highlighter]}").lstrip!
+      end
+
+      # Generate and return an element tree for the table of contents.
       def generate_toc_tree(toc, type, attr)
-        sections = Element.new(type, nil, {:attr => {'id' => 'markdown-toc'}.merge(attr)})
+        sections = Element.new(type, nil, attr)
+        sections.attr['id'] ||= 'markdown-toc'
         stack = []
         toc.each do |level, id, children|
-          li = Element.new(:li, nil, {:level => level})
-          li.children << Element.new(:p, nil, {:transparent => true})
-          a = Element.new(:a, nil, {:attr => {:href => "##{id}"}})
-          a.children += children
+          li = Element.new(:li, nil, nil, {:level => level})
+          li.children << Element.new(:p, nil, nil, {:transparent => true})
+          a = Element.new(:a, nil)
+          a.attr['href'] = "##{id}"
+          a.attr['id'] = "#{sections.attr['id']}-#{id}"
+          a.children.concat(remove_footnotes(Marshal.load(Marshal.dump(children))))
           li.children.last.children << a
           li.children << Element.new(type)
 
@@ -355,34 +402,53 @@ module Kramdown
         sections
       end
 
-      # Helper method for obfuscating the +text+ by using HTML entities.
+      # Remove all footnotes from the given elements.
+      def remove_footnotes(elements)
+        elements.delete_if do |c|
+          remove_footnotes(c.children)
+          c.type == :footnote
+        end
+      end
+
+      # Obfuscate the +text+ by using HTML entities.
       def obfuscate(text)
         result = ""
         text.each_byte do |b|
-          result += (b > 128 ? b.chr : "&#%03d;" % b)
+          result << (b > 128 ? b.chr : "&#%03d;" % b)
         end
-        result.force_encoding(text.encoding) if RUBY_VERSION >= '1.9'
+        result.force_encoding(text.encoding) if result.respond_to?(:force_encoding)
         result
       end
 
-      # Return a HTML list with the footnote content for the used footnotes.
+      FOOTNOTE_BACKLINK_FMT = "%s<a href=\"#fnref:%s\" class=\"reversefootnote\">%s</a>"
+
+      # Return a HTML ordered list with the footnote content for the used footnotes.
       def footnote_content
         ol = Element.new(:ol)
-        ol.options[:attr] = {'start' => @footnote_start} if @footnote_start != 1
-        @footnotes.each do |name, data|
-          li = Element.new(:li, nil, {:attr => {:id => "fn:#{name}"}, :first_is_block => true})
-          li.children = Marshal.load(Marshal.dump(data[:content].children)) #TODO: probably remove this!!!!
-          ol.children << li
+        ol.attr['start'] = @footnote_start if @footnote_start != 1
+        i = 0
+        while i < @footnotes.length
+          name, data, _, repeat = *@footnotes[i]
+          li = Element.new(:li, nil, {'id' => "fn:#{name}"})
+          li.children = Marshal.load(Marshal.dump(data.children))
 
-          ref = Element.new(:raw, "<a href=\"#fnref:#{name}\" rev=\"footnote\">&#8617;</a>")
           if li.children.last.type == :p
             para = li.children.last
+            insert_space = true
           else
             li.children << (para = Element.new(:p))
+            insert_space = false
           end
-          para.children << ref
+
+          para.children << Element.new(:raw, FOOTNOTE_BACKLINK_FMT % [insert_space ? ' ' : '', name, "&#8617;"])
+          (1..repeat).each do |index|
+            para.children << Element.new(:raw, FOOTNOTE_BACKLINK_FMT % [" ", "#{name}:#{index}", "&#8617;<sup>#{index+1}</sup>"])
+          end
+
+          ol.children << Element.new(:raw, convert(li, 4))
+          i += 1
         end
-        (ol.children.empty? ? '' : "<div class=\"footnotes\">\n#{convert(ol, 2)}</div>\n")
+        (ol.children.empty? ? '' : format_as_indented_block_html('div', {:class => "footnotes"}, convert(ol, 2), 0))
       end
 
     end

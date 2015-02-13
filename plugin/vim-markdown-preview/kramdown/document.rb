@@ -1,28 +1,45 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
+# = kramdown
+#
+# kramdown is yet-another-markdown-parser but fast, pure Ruby, using a strict syntax definition and
+# supporting several common extensions.
+#
+# The kramdown library is mainly written to support the kramdown-to-HTML conversion chain. However,
+# due to its flexibility it supports other input and output formats as well. Here is a list of the
+# supported formats:
+#
+# * input formats: kramdown (a Markdown superset), Markdown, HTML
+# * output formats: HTML, kramdown, LaTeX (and therefore PDF)
+#
+# All the documentation on the available input and output formats is available at
+# http://kramdown.gettalong.org.
+#
+# == Usage
+#
+# kramdown has a basic *Cloth API, so using kramdown is as easy as
+#
+#     require 'kramdown'
+#
+#     Kramdown::Document.new(text).to_html
+#
+# For detailed information have a look at the Kramdown::Document class.
+#
+# == License
+#
+# MIT - see the COPYING file.
+
 
 require 'kramdown/compatibility'
 
 require 'kramdown/version'
+require 'kramdown/element'
 require 'kramdown/error'
 require 'kramdown/parser'
 require 'kramdown/converter'
@@ -52,53 +69,42 @@ module Kramdown
   #   doc = Kramdown::Document.new('This *is* some kramdown text')
   #   puts doc.to_html
   #
-  # The #to_html method is a shortcut for using the Converter::Html class.
+  # The #to_html method is a shortcut for using the Converter::Html class. See #method_missing for
+  # more information.
   #
-  # The second argument to the #new method is an options hash for customizing the behaviour of the
-  # used parser and the converter. See Document#new for more information!
+  # The second argument to the ::new method is an options hash for customizing the behaviour of the
+  # used parser and the converter. See ::new for more information!
   class Document
 
-    # The element tree of the document. It is immediately available after the #new method has been
-    # called.
-    attr_accessor :tree
+    # The root Element of the element tree. It is immediately available after the ::new method has
+    # been called.
+    attr_accessor :root
 
-    # The options hash which holds the options for parsing/converting the Kramdown document. It is
-    # possible that these values get changed during the parsing phase.
+    # The options hash which holds the options for parsing/converting the Kramdown document.
     attr_reader :options
 
     # An array of warning messages. It is filled with warnings during the parsing phase (i.e. in
-    # #new) and the conversion phase.
+    # ::new) and the conversion phase.
     attr_reader :warnings
-
-    # Holds needed parse information which is dependent on the used parser, like ALDs, link
-    # definitions and so on. This information may be used by converters afterwards.
-    attr_reader :parse_infos
-
-    # Holds conversion information which is dependent on the used converter. A converter clears this
-    # variable before doing the conversion.
-    attr_reader :conversion_infos
 
 
     # Create a new Kramdown document from the string +source+ and use the provided +options+. The
     # options that can be used are defined in the Options module.
     #
-    # The special options key <tt>:input</tt> can be used to select the parser that should parse the
+    # The special options key :input can be used to select the parser that should parse the
     # +source+. It has to be the name of a class in the Kramdown::Parser module. For example, to
-    # select the kramdown parser, one would set the <tt>:input</tt> key to +Kramdown+. If this key
-    # is not set, it defaults to +Kramdown+.
+    # select the kramdown parser, one would set the :input key to +Kramdown+. If this key is not
+    # set, it defaults to +Kramdown+.
     #
-    # The +source+ is immediately parsed by the selected parser so that the document tree is
+    # The +source+ is immediately parsed by the selected parser so that the root element is
     # immediately available and the output can be generated.
     def initialize(source, options = {})
-      @options = Options.merge(options)
-      @warnings = []
-      @parse_infos = {}
-      @parse_infos[:encoding] = source.encoding if RUBY_VERSION >= '1.9'
-      @conversion_infos = {}
+      @options = Options.merge(options).freeze
       parser = (options[:input] || 'kramdown').to_s
       parser = parser[0..0].upcase + parser[1..-1]
+      try_require('parser', parser)
       if Parser.const_defined?(parser)
-        @tree = Parser.const_get(parser).parse(source, self)
+        @root, @warnings = Parser.const_get(parser).parse(source, @options)
       else
         raise Kramdown::Error.new("kramdown has no parser to handle the specified input format: #{options[:input]}")
       end
@@ -109,56 +115,28 @@ module Kramdown
     #
     # For example, +to_html+ would instantiate the Kramdown::Converter::Html class.
     def method_missing(id, *attr, &block)
-      if id.to_s =~ /^to_(\w+)$/
-        Converter.const_get($1[0..0].upcase + $1[1..-1]).convert(self)
+      if id.to_s =~ /^to_(\w+)$/ && (name = Utils.camelize($1)) &&
+          try_require('converter', name) && Converter.const_defined?(name)
+        output, warnings = Converter.const_get(name).convert(@root, @options)
+        @warnings.concat(warnings)
+        output
       else
         super
       end
     end
 
     def inspect #:nodoc:
-      "<KD:Document: options=#{@options.inspect} tree=#{@tree.inspect} warnings=#{@warnings.inspect}>"
+      "<KD:Document: options=#{@options.inspect} root=#{@root.inspect} warnings=#{@warnings.inspect}>"
     end
 
-  end
-
-
-  # Represents all elements in the parse tree.
-  #
-  # kramdown only uses this one class for representing all available elements in a parse tree
-  # (paragraphs, headers, emphasis, ...). The type of element can be set via the #type accessor.
-  class Element
-
-    # A symbol representing the element type. For example, <tt>:p</tt> or <tt>:blockquote</tt>.
-    attr_accessor :type
-
-    # The value of the element. The interpretation of this field depends on the type of the element.
-    # Many elements don't use this field.
-    attr_accessor :value
-
-    # The options hash for the element. It is used for storing arbitray options as well as the
-    # following special contents:
-    #
-    # - *Attributes* of the element under the <tt>:attr</tt> key
-    # - Category of the element, either <tt>:block</tt> or <tt>:span</tt>, under the
-    #   <tt>:category</tt> key. If this key is absent, it can be assumed that the element is in the
-    #   <tt>:span</tt> category.
-    attr_accessor :options
-
-    # The child elements of this element.
-    attr_accessor :children
-
-
-    # Create a new Element object of type +type+. The optional parameters +value+ and +options+ can
-    # also be set in this constructor for convenience.
-    def initialize(type, value = nil, options = {})
-      @type, @value, @options = type, value, options
-      @children = []
+    # Try requiring a parser or converter class and don't raise an error if the file is not found.
+    def try_require(type, name)
+      require("kramdown/#{type}/#{Utils.snake_case(name)}")
+      true
+    rescue LoadError
+      true
     end
-
-    def inspect #:nodoc:
-      "<kd:#{@type}#{@value.nil? ? '' : ' ' + @value.inspect}#{options.empty? ? '' : ' ' + @options.inspect}#{@children.empty? ? '' : ' ' + @children.inspect}>"
-    end
+    protected :try_require
 
   end
 

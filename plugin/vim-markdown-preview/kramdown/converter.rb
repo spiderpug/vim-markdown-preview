@@ -1,41 +1,68 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
+require 'kramdown/utils'
+
 module Kramdown
 
-  # == Converter Module
+  # This module contains all available converters, i.e. classes that take a root Element and convert
+  # it to a specific output format. The result is normally a string. For example, the
+  # Converter::Html module converts an element tree into valid HTML.
   #
-  # This module contains all available converters, i.e. classes that take a document and convert the
-  # document tree to a specific output format, normally a string. For example, the Html module
-  # converts the document tree into HTML.
-  #
-  # Converters use the Base class for common functionality (like applying a template to the output)-
-  # see its API documentation for how to create a converter class.
+  # Converters use the Base class for common functionality (like applying a template to the output)
+  # \- see its API documentation for how to create a custom converter class.
   module Converter
 
     autoload :Base, 'kramdown/converter/base'
     autoload :Html, 'kramdown/converter/html'
     autoload :Latex, 'kramdown/converter/latex'
     autoload :Kramdown, 'kramdown/converter/kramdown'
+    autoload :Toc, 'kramdown/converter/toc'
+    autoload :RemoveHtmlTags, 'kramdown/converter/remove_html_tags'
+    autoload :Pdf, 'kramdown/converter/pdf'
+
+    extend ::Kramdown::Utils::Configurable
+
+    configurable(:syntax_highlighter)
+
+    ["Coderay", "Rouge"].each do |klass_name|
+      kn_down = klass_name.downcase.intern
+      add_syntax_highlighter(kn_down) do |converter, text, lang, type, opts|
+        require "kramdown/converter/syntax_highlighter/#{kn_down}"
+        klass = ::Kramdown::Utils.deep_const_get("::Kramdown::Converter::SyntaxHighlighter::#{klass_name}")
+        if klass::AVAILABLE
+          add_syntax_highlighter(kn_down, klass)
+        else
+          add_syntax_highlighter(kn_down) {|*args| nil}
+        end
+        syntax_highlighter(kn_down).call(converter, text, lang, type, opts)
+      end
+    end
+
+    configurable(:math_engine)
+
+    require 'kramdown/converter/math_engine/mathjax'
+    add_math_engine(:mathjax, ::Kramdown::Converter::MathEngine::Mathjax)
+
+    ["Ritex", "Itex2MML"].each do |klass_name|
+      kn_down = klass_name.downcase.intern
+      add_math_engine(kn_down) do |converter, el, opts|
+        require "kramdown/converter/math_engine/#{kn_down}"
+        klass = ::Kramdown::Utils.deep_const_get("::Kramdown::Converter::MathEngine::#{klass_name}")
+        if klass::AVAILABLE
+          add_math_engine(kn_down, klass)
+        else
+          add_math_engine(kn_down) {|*args| nil}
+        end
+        math_engine(kn_down).call(converter, el, opts)
+      end
+    end
 
   end
 

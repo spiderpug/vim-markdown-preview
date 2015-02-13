@@ -1,24 +1,13 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
+
+require 'yaml'
 
 module Kramdown
 
@@ -40,27 +29,31 @@ module Kramdown
     # ----------------------------
     # :section: Option definitions
     #
-    # This sections informs describes the methods that can be used on the Options module.
+    # This sections describes the methods that can be used on the Options module.
     # ----------------------------
 
-    # Contains the definition of an option.
-    Definition = Struct.new(:name, :type, :default, :desc)
+    # Struct class for storing the definition of an option.
+    Definition = Struct.new(:name, :type, :default, :desc, :validator)
 
     # Allowed option types.
-    ALLOWED_TYPES = [String, Integer, Float, Symbol, Boolean, Array, Object]
+    ALLOWED_TYPES = [String, Integer, Float, Symbol, Boolean, Object]
 
     @options = {}
 
     # Define a new option called +name+ (a Symbol) with the given +type+ (String, Integer, Float,
-    # Symbol, Boolean, Array, Object), default value +default+ and the description +desc+.
+    # Symbol, Boolean, Object), default value +default+ and the description +desc+. If a block is
+    # specified, it should validate the value and either raise an error or return a valid value.
     #
-    # The type 'Object' should only be used if none of the other types suffices because such an
-    # option will be opaque and cannot be used, for example, by CLI command!
-    def self.define(name, type, default, desc)
+    # The type 'Object' should only be used for complex types for which none of the other types
+    # suffices. A block needs to be specified when using type 'Object' and it has to cope with
+    # a value given as string and as the opaque type.
+    def self.define(name, type, default, desc, &block)
+      name = name.to_sym
       raise ArgumentError, "Option name #{name} is already used" if @options.has_key?(name)
       raise ArgumentError, "Invalid option type #{type} specified" if !ALLOWED_TYPES.include?(type)
       raise ArgumentError, "Invalid type for default value" if !(type === default) && !default.nil?
-      @options[name] = Definition.new(name, type, default, desc)
+      raise ArgumentError, "Missing validator block" if type == Object && block.nil?
+      @options[name] = Definition.new(name, type, default, desc, block)
     end
 
     # Return all option definitions.
@@ -70,7 +63,7 @@ module Kramdown
 
     # Return +true+ if an option called +name+ is defined.
     def self.defined?(name)
-      @options.has_key?(name)
+      @options.has_key?(name.to_sym)
     end
 
     # Return a Hash with the default values for all options.
@@ -85,8 +78,8 @@ module Kramdown
     def self.merge(hash)
       temp = defaults
       hash.each do |k,v|
-        next unless @options.has_key?(k)
-        temp[k] = parse(k, v)
+        k = k.to_sym
+        @options.has_key?(k) ? temp[k] = parse(k, v) : temp[k] = v
       end
       temp
     end
@@ -97,22 +90,77 @@ module Kramdown
     # If +data+ already has the correct type, it is just returned. Otherwise it is converted to a
     # String and then to the correct type.
     def self.parse(name, data)
+      name = name.to_sym
       raise ArgumentError, "No option named #{name} defined" if !@options.has_key?(name)
-      return data if @options[name].type === data
-      data = data.to_s
-      if @options[name].type == String
-        data
-      elsif @options[name].type == Integer
-        Integer(data)
-      elsif @options[name].type == Float
-        Float(data)
-      elsif @options[name].type == Symbol
-        (data.strip.empty? ? nil : data.to_sym)
-      elsif @options[name].type == Boolean
-        data.downcase.strip != 'false' && !data.empty?
-      elsif @options[name].type == Array
-        data.split(/\s+/)
+      if !(@options[name].type === data)
+        data = data.to_s
+        data = if @options[name].type == String
+                 data
+               elsif @options[name].type == Integer
+                 Integer(data) rescue raise Kramdown::Error, "Invalid integer value for option '#{name}': '#{data}'"
+               elsif @options[name].type == Float
+                 Float(data) rescue raise Kramdown::Error, "Invalid float value for option '#{name}': '#{data}'"
+               elsif @options[name].type == Symbol
+                 str_to_sym(data)
+               elsif @options[name].type == Boolean
+                 data.downcase.strip != 'false' && !data.empty?
+               end
       end
+      data = @options[name].validator[data] if @options[name].validator
+      data
+    end
+
+    # Converts the given String +data+ into a Symbol or +nil+ with the
+    # following provisions:
+    #
+    # - A leading colon is stripped from the string.
+    # - An empty value or a value equal to "nil" results in +nil+.
+    def self.str_to_sym(data)
+      data = data.strip
+      data = data[1..-1] if data[0] == ?:
+      (data.empty? || data == 'nil' ? nil : data.to_sym)
+    end
+
+    # ----------------------------
+    # :section: Option Validators
+    #
+    # This sections contains all pre-defined option validators.
+    # ----------------------------
+
+    # Ensures that the option value +val+ for the option called +name+ is a valid array. The
+    # parameter +val+ can be
+    #
+    # - a comma separated string which is split into an array of values
+    # - or an array.
+    #
+    # Additionally, the array is checked for the correct size.
+    def self.simple_array_validator(val, name, size)
+      if String === val
+        val = val.split(/,/)
+      elsif !(Array === val)
+        raise Kramdown::Error, "Invalid type #{val.class} for option #{name}"
+      end
+      if val.size != size
+        raise Kramdown::Error, "Option #{name} needs exactly #{size} values"
+      end
+      val
+    end
+
+    # Ensures that the option value +val+ for the option called +name+ is a valid hash. The
+    # parameter +val+ can be
+    #
+    # - a hash in YAML format
+    # - or a Ruby Hash object.
+    def self.simple_hash_validator(val, name)
+      if String === val
+        begin
+          val = YAML.load(val)
+        rescue RuntimeError, ArgumentError, SyntaxError
+          raise Kramdown::Error, "Invalid YAML value for option #{name}"
+        end
+      end
+      raise Kramdown::Error, "Invalid type #{val.class} for option #{name}" if !(Hash === val)
+      val
     end
 
     # ----------------------------
@@ -124,6 +172,7 @@ module Kramdown
 
     define(:template, String, '', <<EOF)
 The name of an ERB template file that should be used to wrap the output
+or the ERB template itself.
 
 This is used to wrap the output in an environment so that the output can
 be used as a stand-alone document. For example, an HTML template would
@@ -132,12 +181,15 @@ valid HTML file. If no template is specified, the output will be just
 the converted text.
 
 When resolving the template file, the given template name is used first.
-If such a file is not found, the converter extension is appended. If the
-file still cannot be found, the templates name is interpreted as a
-template name that is provided by kramdown (without the converter
-extension).
+If such a file is not found, the converter extension (the same as the
+converter name) is appended. If the file still cannot be found, the
+templates name is interpreted as a template name that is provided by
+kramdown (without the converter extension). If the file is still not
+found, the template name is checked if it starts with 'string://' and if
+it does, this prefix is removed and the rest is used as template
+content.
 
-kramdown provides a default template named 'default' for each converter.
+kramdown provides a default template named 'document' for each converter.
 
 Default: ''
 Used by: all converters
@@ -153,8 +205,22 @@ Default: true
 Used by: HTML/Latex converter
 EOF
 
+    define(:auto_id_stripping, Boolean, false, <<EOF)
+Strip all formatting from header text for automatic ID generation
+
+If this option is `true`, only the text elements of a header are used
+for generating the ID later (in contrast to just using the raw header
+text line).
+
+This option will be removed in version 2.0 because this will be the
+default then.
+
+Default: false
+Used by: kramdown parser
+EOF
+
     define(:auto_id_prefix, String, '', <<EOF)
-Prefix used for automatically generated heaer IDs
+Prefix used for automatically generated header IDs
 
 This option can be used to set a prefix for the automatically generated
 header IDs so that there is no conflict when rendering multiple kramdown
@@ -165,11 +231,25 @@ Default: ''
 Used by: HTML/Latex converter
 EOF
 
+    define(:transliterated_header_ids, Boolean, false, <<EOF)
+Transliterate the header text before generating the ID
+
+Only ASCII characters are used in headers IDs. This is not good for
+languages with many non-ASCII characters. By enabling this option
+the header text is transliterated to ASCII as good as possible so that
+the resulting header ID is more useful.
+
+The stringex library needs to be installed for this feature to work!
+
+Default: false
+Used by: HTML/Latex converter
+EOF
+
     define(:parse_block_html, Boolean, false, <<EOF)
 Process kramdown syntax in block HTML tags
 
 If this option is `true`, the kramdown parser processes the content of
-block HTML tags as text containing block level elements. Since this is
+block HTML tags as text containing block-level elements. Since this is
 not wanted normally, the default is `false`. It is normally better to
 selectively enable kramdown processing via the markdown attribute.
 
@@ -181,7 +261,7 @@ EOF
 Process kramdown syntax in span HTML tags
 
 If this option is `true`, the kramdown parser processes the content of
-span HTML tags as text containing span level elements.
+span HTML tags as text containing span-level elements.
 
 Default: true
 Used by: kramdown parser
@@ -202,6 +282,29 @@ Default: false
 Used by: kramdown parser
 EOF
 
+    define(:link_defs, Object, {}, <<EOF) do |val|
+Pre-defines link definitions
+
+This option can be used to pre-define link definitions. The value needs
+to be a Hash where the keys are the link identifiers and the values are
+two element Arrays with the link URL and the link title.
+
+If the value is a String, it has to contain a valid YAML hash and the
+hash has to follow the above guidelines.
+
+Default: {}
+Used by: kramdown parser
+EOF
+      val = simple_hash_validator(val, :link_defs)
+      val.each do |k,v|
+        if !(Array === v) || v.size > 2 || v.size < 1
+          raise Kramdown::Error, "Invalid structure for hash value of option #{name}"
+        end
+        v << nil if v.size == 1
+      end
+      val
+    end
+
     define(:footnote_nr, Integer, 1, <<EOF)
 The number of the first footnote
 
@@ -209,6 +312,16 @@ This option can be used to specify the number that is used for the first
 footnote.
 
 Default: 1
+Used by: HTML converter
+EOF
+
+    define(:enable_coderay, Boolean, true, <<EOF)
+Use coderay for syntax highlighting
+
+If this option is `true`, coderay is used by the HTML converter for
+syntax highlighting the content of code spans and code blocks.
+
+Default: true
 Used by: HTML converter
 EOF
 
@@ -224,7 +337,7 @@ EOF
     define(:coderay_line_numbers, Symbol, :inline, <<EOF)
 Defines how and if line numbers should be shown
 
-The possible values are :table, :inline, :list or nil. If this option is
+The possible values are :table, :inline or nil. If this option is
 nil, no line numbers are shown.
 
 Default: :inline
@@ -244,12 +357,21 @@ The tab width used in highlighted code
 Used by: HTML converter
 EOF
 
-    define(:coderay_bold_every, Integer, 10, <<EOF)
+    define(:coderay_bold_every, Object, 10, <<EOF) do |val|
 Defines how often a line number should be made bold
+
+Can either be an integer or false (to turn off bold line numbers
+completely).
 
 Default: 10
 Used by: HTML converter
 EOF
+      if val == false || val.to_s == 'false'
+        false
+      else
+        Integer(val.to_s) rescue raise Kramdown::Error, "Invalid value for option 'coderay_bold_every'"
+      end
+end
 
     define(:coderay_css, Symbol, :style, <<EOF)
 Defines how the highlighted code gets styled
@@ -262,21 +384,201 @@ Default: style
 Used by: HTML converter
 EOF
 
-    define(:numeric_entities, Boolean, false, <<EOF)
-Defines whether entities are output using names or numeric values
+    define(:coderay_default_lang, Symbol, nil, <<EOF)
+Sets the default language for highlighting code blocks
 
-Default: false
+If no language is set for a code block, the default language is used
+instead. The value has to be one of the languages supported by coderay
+or nil if no default language should be used.
+
+Default: nil
+Used by: HTML converter
+EOF
+
+    define(:entity_output, Symbol, :as_char, <<EOF)
+Defines how entities are output
+
+The possible values are :as_input (entities are output in the same
+form as found in the input), :numeric (entities are output in numeric
+form), :symbolic (entities are output in symbolic form if possible) or
+:as_char (entities are output as characters if possible, only available
+on Ruby 1.9).
+
+Default: :as_char
 Used by: HTML converter, kramdown converter
 EOF
 
-    define(:toc_depth, Integer, 0, <<EOF)
-Defines the maximum level of headers which will be used to generate the table of
-contents. For instance, with a value of 2, toc entries will be generated for h1
-and h2 headers but not for h3, h4, etc. A value of 0 uses all header levels.
+    define(:toc_levels, Object, (1..6).to_a, <<EOF) do |val|
+Defines the levels that are used for the table of contents
 
-Default: 0
+The individual levels can be specified by separating them with commas
+(e.g. 1,2,3) or by using the range syntax (e.g. 1..3). Only the
+specified levels are used for the table of contents.
+
+Default: 1..6
 Used by: HTML/Latex converter
 EOF
+      case val
+      when String
+        if val =~ /^(\d)\.\.(\d)$/
+          val = Range.new($1.to_i, $2.to_i).to_a
+        elsif val =~ /^\d(?:,\d)*$/
+          val = val.split(/,/).map {|s| s.to_i}.uniq
+        else
+          raise Kramdown::Error, "Invalid syntax for option toc_levels"
+        end
+      when Array, Range
+        val = val.map {|s| s.to_i}.uniq
+      else
+        raise Kramdown::Error, "Invalid type #{val.class} for option toc_levels"
+      end
+      if val.any? {|i| !(1..6).include?(i)}
+        raise Kramdown::Error, "Level numbers for option toc_levels have to be integers from 1 to 6"
+      end
+      val
+    end
+
+    define(:line_width, Integer, 72, <<EOF)
+Defines the line width to be used when outputting a document
+
+Default: 72
+Used by: kramdown converter
+EOF
+
+    define(:latex_headers, Object, %w{section subsection subsubsection paragraph subparagraph subparagraph}, <<EOF) do |val|
+Defines the LaTeX commands for different header levels
+
+The commands for the header levels one to six can be specified by
+separating them with commas.
+
+Default: section,subsection,subsubsection,paragraph,subparagraph,subparagraph
+Used by: Latex converter
+EOF
+      simple_array_validator(val, :latex_headers, 6)
+    end
+
+    define(:smart_quotes, Object, %w{lsquo rsquo ldquo rdquo}, <<EOF) do |val|
+Defines the HTML entity names or code points for smart quote output
+
+The entities identified by entity name or code point that should be
+used for, in order, a left single quote, a right single quote, a left
+double and a right double quote are specified by separating them with
+commas.
+
+Default: lsquo,rsquo,ldquo,rdquo
+Used by: HTML/Latex converter
+EOF
+      val = simple_array_validator(val, :smart_quotes, 4)
+      val.map! {|v| Integer(v) rescue v}
+      val
+    end
+
+    define(:remove_block_html_tags, Boolean, true, <<EOF)
+Remove block HTML tags
+
+If this option is `true`, the RemoveHtmlTags converter removes
+block HTML tags.
+
+Default: true
+Used by: RemoveHtmlTags converter
+EOF
+
+    define(:remove_span_html_tags, Boolean, false, <<EOF)
+Remove span HTML tags
+
+If this option is `true`, the RemoveHtmlTags converter removes
+span HTML tags.
+
+Default: false
+Used by: RemoveHtmlTags converter
+EOF
+
+    define(:header_offset, Integer, 0, <<EOF)
+Sets the output offset for headers
+
+If this option is c (may also be negative) then a header with level n
+will be output as a header with level c+n. If c+n is lower than 1,
+level 1 will be used. If c+n is greater than 6, level 6 will be used.
+
+Default: 0
+Used by: HTML converter, Kramdown converter, Latex converter
+EOF
+
+    define(:hard_wrap, Boolean, true, <<EOF)
+Interprets line breaks literally
+
+Insert HTML `<br />` tags inside paragraphs where the original Markdown
+document had newlines (by default, Markdown ignores these newlines).
+
+Default: true
+Used by: GFM parser
+EOF
+
+    define(:syntax_highlighter, Symbol, :coderay, <<EOF)
+Set the syntax highlighter
+
+Specifies the syntax highlighter that should be used for highlighting
+code blocks and spans. If this option is set to +nil+, no syntax
+highlighting is done.
+
+Options for the syntax highlighter can be set with the
+syntax_highlighter_opts configuration option.
+
+Default: coderay
+Used by: HTML converter
+EOF
+
+    define(:syntax_highlighter_opts, Object, {}, <<EOF) do |val|
+Set the syntax highlighter options
+
+Specifies options for the syntax highlighter set via the
+syntax_highlighter configuration option.
+
+The value needs to be a hash with key-value pairs that are understood by
+the used syntax highlighter.
+
+Default: {}
+Used by: HTML converter
+EOF
+      val = simple_hash_validator(val, :syntax_highlighter_opts)
+      val.keys.each do |k|
+        val[k.kind_of?(String) ? str_to_sym(k) : k] = val.delete(k)
+      end
+      val
+    end
+
+    define(:math_engine, Symbol, :mathjax, <<EOF)
+Set the math engine
+
+Specifies the math engine that should be used for converting math
+blocks/spans. If this option is set to +nil+, no math engine is used and
+the math blocks/spans are output as is.
+
+Options for the selected math engine can be set with the
+math_engine_opts configuration option.
+
+Default: mathjax
+Used by: HTML converter
+EOF
+
+    define(:math_engine_opts, Object, {}, <<EOF) do |val|
+Set the math engine options
+
+Specifies options for the math engine set via the math_engine
+configuration option.
+
+The value needs to be a hash with key-value pairs that are understood by
+the used math engine.
+
+Default: {}
+Used by: HTML converter
+EOF
+      val = simple_hash_validator(val, :math_engine_opts)
+      val.keys.each do |k|
+        val[k.kind_of?(String) ? str_to_sym(k) : k] = val.delete(k)
+      end
+      val
+    end
 
   end
 

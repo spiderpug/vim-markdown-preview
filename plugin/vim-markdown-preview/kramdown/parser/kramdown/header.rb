@@ -1,42 +1,32 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
+
+require 'kramdown/parser/kramdown/block_boundary'
 
 module Kramdown
   module Parser
     class Kramdown
 
-      HEADER_ID=/(?:[ \t]\{#((?:\w|\d)[\w\d-]*)\})?/
+      HEADER_ID=/(?:[ \t]+\{#([A-Za-z][\w:-]*)\})?/
       SETEXT_HEADER_START = /^(#{OPT_SPACE}[^ \t].*?)#{HEADER_ID}[ \t]*?\n(-|=)+\s*?\n/
 
       # Parse the Setext header at the current location.
       def parse_setext_header
-        if @tree.children.last && @tree.children.last.type != :blank
-          return false
-        end
+        return false if !after_block_boundary?
+
+        start_line_number = @src.current_line_number
         @src.pos += @src.matched_size
-        text, id, level = @src[1].strip, @src[2], @src[3]
-        el = new_block_el(:header, nil, :level => (level == '-' ? 2 : 1), :raw_text => text)
+        text, id, level = @src[1], @src[2], @src[3]
+        text.strip!
+        el = new_block_el(:header, nil, nil, :level => (level == '-' ? 2 : 1), :raw_text => text, :location => start_line_number)
         add_text(text, el)
-        el.options[:attr] = {'id' => id} if id
+        el.attr['id'] = id if id
         @tree.children << el
         true
       end
@@ -44,18 +34,21 @@ module Kramdown
 
 
       ATX_HEADER_START = /^\#{1,6}/
-      ATX_HEADER_MATCH = /^(\#{1,6})(.+?)\s*?#*#{HEADER_ID}\s*?\n/
+      ATX_HEADER_MATCH = /^(\#{1,6})(.+?(?:\\#)?)\s*?#*#{HEADER_ID}\s*?\n/
 
       # Parse the Atx header at the current location.
       def parse_atx_header
-        if @tree.children.last && @tree.children.last.type != :blank
-          return false
-        end
-        result = @src.scan(ATX_HEADER_MATCH)
-        level, text, id = @src[1], @src[2].strip, @src[3]
-        el = new_block_el(:header, nil, :level => level.length, :raw_text => text)
+        return false if !after_block_boundary?
+
+        start_line_number = @src.current_line_number
+        @src.check(ATX_HEADER_MATCH)
+        level, text, id = @src[1], @src[2].to_s.strip, @src[3]
+        return false if text.empty?
+
+        @src.pos += @src.matched_size
+        el = new_block_el(:header, nil, nil, :level => level.length, :raw_text => text, :location => start_line_number)
         add_text(text, el)
-        el.options[:attr] = {'id' => id} if id
+        el.attr['id'] = id if id
         @tree.children << el
         true
       end

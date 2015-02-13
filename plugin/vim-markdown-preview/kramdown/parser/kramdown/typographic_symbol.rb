@@ -1,22 +1,9 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
@@ -33,16 +20,21 @@ module Kramdown
 
       # Parse the typographic symbols at the current location.
       def parse_typographic_syms
+        start_line_number = @src.current_line_number
         @src.pos += @src.matched_size
         val = TYPOGRAPHIC_SYMS_SUBST[@src.matched]
         if val.kind_of?(Symbol)
-          @tree.children << Element.new(:typographic_sym, val)
+          @tree.children << Element.new(:typographic_sym, val, nil, :location => start_line_number)
         elsif @src.matched == '\\<<'
-          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('lt'))
-          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('lt'))
+          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('lt'),
+                                        nil, :location => start_line_number)
+          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('lt'),
+                                        nil, :location => start_line_number)
         else
-          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('gt'))
-          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('gt'))
+          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('gt'),
+                                        nil, :location => start_line_number)
+          @tree.children << Element.new(:entity, ::Kramdown::Utils::Entities.entity('gt'),
+                                        nil, :location => start_line_number)
         end
       end
       define_parser(:typographic_syms, TYPOGRAPHIC_SYMS_RE, '--|\\.\\.\\.|(?:\\\\| )?(?:<<|>>)')

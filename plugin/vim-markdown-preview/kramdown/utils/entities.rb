@@ -1,22 +1,9 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
@@ -24,16 +11,23 @@ module Kramdown
 
   module Utils
 
+    # Provides convenience methods for handling named and numeric entities.
     module Entities
 
+      # Represents an entity that has a +code_point+ and +name+.
       class Entity < Struct.new(:code_point, :name)
 
+        # Return the UTF8 representation of the entity.
         def char
           [code_point].pack('U*') rescue nil
         end
 
       end
 
+      # Array of arrays. Each sub-array specifies a code point and the associated name.
+      #
+      # This table is not used directly -- Entity objects are automatically created from it and put
+      # into a Hash map when this file is loaded.
       ENTITY_TABLE = [
                       [913, 'Alpha'],
                       [914, 'Beta'],
@@ -85,9 +79,15 @@ module Kramdown
                       [969, 'omega'],
                       [962, 'sigmaf'],
                       [977, 'thetasym'],
+                      [978, 'upsih'],
                       [982, 'piv'],
+                      [8204, 'zwnj'],
+                      [8205, 'zwj'],
+                      [8206, 'lrm'],
+                      [8207, 'rlm'],
                       [8230, 'hellip'],
                       [8242, 'prime'],
+                      [8243, 'Prime'],
                       [8254, 'oline'],
                       [8260, 'frasl'],
                       [8472, 'weierp'],
@@ -145,6 +145,7 @@ module Kramdown
                       [8855, 'otimes'],
                       [8869, 'perp'],
                       [8901, 'sdot'],
+                      [8942, 'vellip'],
                       [8968, 'rceil'],
                       [8969, 'lceil'],
                       [8970, 'lfloor'],
@@ -188,17 +189,21 @@ module Kramdown
                       [165, 'yen'],
                       [166, 'brvbar'],
                       [167, 'sect'],
+                      [168, 'uml'],
                       [171, 'laquo'],
                       [187, 'raquo'],
                       [174, 'reg'],
                       [170, 'ordf'],
                       [172, 'not'],
+                      [173, 'shy'],
+                      [175, 'macr'],
                       [176, 'deg'],
                       [177, 'plusmn'],
                       [180, 'acute'],
                       [181, 'micro'],
                       [182, 'para'],
                       [183, 'middot'],
+                      [184, 'cedil'],
                       [186, 'ordm'],
                       [162, 'cent'],
                       [185, 'sup1'],
@@ -207,6 +212,7 @@ module Kramdown
                       [189, 'frac12'],
                       [188, 'frac14'],
                       [190, 'frac34'],
+                      [191, 'iquest'],
                       [192, 'Agrave'],
                       [193, 'Aacute'],
                       [194, 'Acirc'],
@@ -275,8 +281,6 @@ module Kramdown
                       [8218, 'sbquo'],
                       [402, 'fnof'],
                       [8222, 'bdquo'],
-                      [381, 'Zcaron'],
-                      [382, 'zcaron'],
 
                       [128, 8364],
                       [130, 8218],
@@ -305,7 +309,13 @@ module Kramdown
                       [156, 339],
                       [158, 382],
                       [159, 376],
+
+                      [8194, 'ensp'],
+                      [8195, 'emsp'],
+                      [8201, 'thinsp'],
                      ]
+
+      # Contains the mapping of code point (or name) to the actual Entity object.
       ENTITY_MAP = Hash.new do |h,k|
         if k.kind_of?(Integer)
           h[k] = Entity.new(k, nil)
@@ -318,12 +328,11 @@ module Kramdown
         if data.kind_of?(String)
           ENTITY_MAP[code_point] = ENTITY_MAP[data] = Entity.new(code_point, data)
         else
-          raise "No entity object for code point #{data} found" unless ENTITY_MAP.has_key?(data)
           ENTITY_MAP[code_point] = ENTITY_MAP[data]
         end
       end
 
-      # Return the entity for the given +point_or_name+.
+      # Return the entity for the given code point or name +point_or_name+.
       def entity(point_or_name)
         ENTITY_MAP[point_or_name]
       end

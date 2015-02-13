@@ -1,51 +1,48 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
 require 'kramdown/parser/kramdown/blank_line'
+require 'kramdown/parser/kramdown/extensions'
+require 'kramdown/parser/kramdown/eob'
+require 'kramdown/parser/kramdown/paragraph'
 
 module Kramdown
   module Parser
     class Kramdown
 
       CODEBLOCK_START = INDENT
-      CODEBLOCK_LINE =  /(?:#{INDENT}.*?\S.*?\n)+/
-      CODEBLOCK_MATCH = /(?:#{BLANK_LINE}?#{CODEBLOCK_LINE})*/
+      CODEBLOCK_MATCH = /(?:#{BLANK_LINE}?(?:#{INDENT}[ \t]*\S.*\n)+(?:(?!#{IAL_BLOCK_START}|#{EOB_MARKER}|^#{OPT_SPACE}#{LAZY_END_HTML_STOP}|^#{OPT_SPACE}#{LAZY_END_HTML_START})^[ \t]*\S.*\n)*)*/
 
       # Parse the indented codeblock at the current location.
       def parse_codeblock
-        @tree.children << new_block_el(:codeblock, @src.scan(CODEBLOCK_MATCH).gsub!(INDENT, ''))
+        start_line_number = @src.current_line_number
+        data = @src.scan(self.class::CODEBLOCK_MATCH)
+        data.gsub!(/\n( {0,3}\S)/, ' \\1')
+        data.gsub!(INDENT, '')
+        @tree.children << new_block_el(:codeblock, data, nil, :location => start_line_number)
         true
       end
       define_parser(:codeblock, CODEBLOCK_START)
 
 
       FENCED_CODEBLOCK_START = /^~{3,}/
-      FENCED_CODEBLOCK_MATCH = /^(~{3,})\s*?\n(.*?)^\1~*\s*?\n/m
+      FENCED_CODEBLOCK_MATCH = /^((~){3,})\s*?(\w+)?\s*?\n(.*?)^\1\2*\s*?\n/m
 
       # Parse the fenced codeblock at the current location.
       def parse_codeblock_fenced
-        if @src.check(FENCED_CODEBLOCK_MATCH)
+        if @src.check(self.class::FENCED_CODEBLOCK_MATCH)
+          start_line_number = @src.current_line_number
           @src.pos += @src.matched_size
-          @tree.children << new_block_el(:codeblock, @src[2])
+          el = new_block_el(:codeblock, @src[4], nil, :location => start_line_number)
+          lang = @src[3].to_s.strip
+          el.attr['class'] = "language-#{lang}" unless lang.empty?
+          @tree.children << el
           true
         else
           false

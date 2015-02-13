@@ -1,22 +1,9 @@
 # -*- coding: utf-8 -*-
 #
 #--
-# Copyright (C) 2009-2010 Thomas Leitner <t_leitner@gmx.at>
+# Copyright (C) 2009-2014 Thomas Leitner <t_leitner@gmx.at>
 #
-# This file is part of kramdown.
-#
-# kramdown is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# This file is part of kramdown which is licensed under the MIT.
 #++
 #
 
@@ -26,28 +13,42 @@ module Kramdown
 
   module Converter
 
-    # Converts a Kramdown::Document to LaTeX. This converter uses ideas from other Markdown-to-LaTeX
-    # converters like Pandoc and Maruku.
+    # Converts an element tree to LaTeX.
+    #
+    # This converter uses ideas from other Markdown-to-LaTeX converters like Pandoc and Maruku.
+    #
+    # You can customize this converter by sub-classing it and overriding the +convert_NAME+ methods.
+    # Each such method takes the following parameters:
+    #
+    # [+el+] The element of type +NAME+ to be converted.
+    #
+    # [+opts+] A hash containing processing options that are passed down from parent elements. The
+    #          key :parent is always set and contains the parent element as value.
+    #
+    # The return value of such a method has to be a string containing the element +el+ formatted
+    # correctly as LaTeX markup.
     class Latex < Base
 
-      # :stopdoc:
-
-      # Initialize the LaTeX converter with the given Kramdown document +doc+.
-      def initialize(doc)
+      # Initialize the LaTeX converter with the +root+ element and the conversion +options+.
+      def initialize(root, options)
         super
-        #TODO: set the footnote counter at the beginning of the document
-        @doc.options[:footnote_nr]
-        @doc.conversion_infos[:packages] = Set.new
+        @data[:packages] = Set.new
       end
 
+      # Dispatch the conversion of the element +el+ to a +convert_TYPE+ method using the +type+ of
+      # the element.
       def convert(el, opts = {})
         send("convert_#{el.type}", el, opts)
       end
 
+      # Return the converted content of the children of +el+ as a string.
       def inner(el, opts)
         result = ''
-        el.children.each do |inner_el|
-          result << send("convert_#{inner_el.type}", inner_el, opts)
+        options = opts.dup.merge(:parent => el)
+        el.children.each_with_index do |inner_el, index|
+          options[:index] = index
+          options[:result] = result
+          result << send("convert_#{inner_el.type}", inner_el, options)
         end
         result
       end
@@ -57,7 +58,7 @@ module Kramdown
       end
 
       def convert_blank(el, opts)
-        ""
+        opts[:result] =~ /\n\n\Z|\A\Z/ ? "" : "\n"
       end
 
       def convert_text(el, opts)
@@ -65,56 +66,59 @@ module Kramdown
       end
 
       def convert_p(el, opts)
-        "#{inner(el, opts)}\n\n"
-      end
-
-      def convert_codeblock(el, opts)
-        show_whitespace = el.options[:attr] && el.options[:attr]['class'].to_s =~ /\bshow-whitespaces\b/
-        lang = el.options[:attr] && el.options[:attr]['lang']
-        if show_whitespace || lang
-          result = "\\lstset{showspaces=%s,showtabs=%s}\n" % (show_whitespace ? ['true', 'true'] : ['false', 'false'])
-          result += "\\lstset{language=#{lang}}\n" if lang
-          result += "\\lstset{basicstyle=\\ttfamily\\footnotesize}\\lstset{columns=fixed,frame=tlbr}\n"
-          "#{result}\\begin{lstlisting}#{attribute_list(el)}\n#{el.value}\n\\end{lstlisting}\n"
+        if el.children.size == 1 && el.children.first.type == :img && !(img = convert_img(el.children.first, opts)).empty?
+          convert_standalone_image(el, opts, img)
         else
-          "\\begin{verbatim}#{el.value}\\end{verbatim}\n"
+          "#{latex_link_target(el)}#{inner(el, opts)}\n\n"
         end
       end
 
-      def latex_environment(type, el, text)
-        "\\begin{#{type}}#{attribute_list(el)}\n#{text}\n\\end{#{type}}\n"
+      # Helper method used by +convert_p+ to convert a paragraph that only contains a single :img
+      # element.
+      def convert_standalone_image(el, opts, img)
+        attrs = attribute_list(el)
+        "\\begin{figure}#{attrs}\n\\begin{center}\n#{img}\n\\end{center}\n\\caption{#{escape(el.children.first.attr['alt'])}}\n#{latex_link_target(el, true)}\n\\end{figure}#{attrs}\n"
+      end
+
+      def convert_codeblock(el, opts)
+        show_whitespace = el.attr['class'].to_s =~ /\bshow-whitespaces\b/
+        lang = extract_code_language(el.attr)
+        if show_whitespace || lang
+          options = []
+          options << "showspaces=%s,showtabs=%s" % (show_whitespace ? ['true', 'true'] : ['false', 'false'])
+          options << "language=#{lang}" if lang
+          options << "basicstyle=\\ttfamily\\footnotesize,columns=fixed,frame=tlbr"
+          id = el.attr['id']
+          options << "label=#{id}" if id
+          attrs = attribute_list(el)
+          "#{latex_link_target(el)}\\begin{lstlisting}[#{options.join(',')}]\n#{el.value}\n\\end{lstlisting}#{attrs}\n"
+        else
+          "#{latex_link_target(el)}\\begin{verbatim}#{el.value}\\end{verbatim}\n"
+        end
       end
 
       def convert_blockquote(el, opts)
-        latex_environment('quote', el, inner(el, opts))
+        latex_environment(el.children.size > 1 ? 'quotation' : 'quote', el, inner(el, opts))
       end
 
-      HEADER_TYPES = {
-        1 => 'section',
-        2 => 'subsection',
-        3 => 'subsubsection',
-        4 => 'paragraph',
-        5 => 'subparagraph',
-        6 => 'subparagraph'
-      }
       def convert_header(el, opts)
-        type = HEADER_TYPES[el.options[:level]]
-        if ((el.options[:attr] && (id = el.options[:attr]['id'])) ||
-            (@doc.options[:auto_ids] && (id = generate_id(el.options[:raw_text])))) &&
-            (@doc.options[:toc_depth] <= 0 || el.options[:level] <= @doc.options[:toc_depth])
-          "\\hypertarget{#{id}}{}\\#{type}{#{inner(el, opts)}}\\label{#{id}}\n\n"
+        type = @options[:latex_headers][output_header_level(el.options[:level]) - 1]
+        if ((id = el.attr['id']) ||
+            (@options[:auto_ids] && (id = generate_id(el.options[:raw_text])))) && in_toc?(el)
+          "\\#{type}{#{inner(el, opts)}}\\hypertarget{#{id}}{}\\label{#{id}}\n\n"
         else
           "\\#{type}*{#{inner(el, opts)}}\n\n"
         end
       end
 
       def convert_hr(el, opts)
-        "\\begin{center}#{attribute_list(el)}\n\\rule{3in}{0.4pt}\n\\end{center}\n"
+        attrs = attribute_list(el)
+        "#{latex_link_target(el)}\\begin{center}#{attrs}\n\\rule{3in}{0.4pt}\n\\end{center}#{attrs}\n"
       end
 
       def convert_ul(el, opts)
-        if !@doc.conversion_infos[:has_toc] && (el.options[:ial][:refs].include?('toc') rescue nil)
-          @doc.conversion_infos[:has_toc] = true
+        if !@data[:has_toc] && (el.options[:ial][:refs].include?('toc') rescue nil)
+          @data[:has_toc] = true
           '\tableofcontents'
         else
           latex_environment(el.type == :ul ? 'itemize' : 'enumerate', el, inner(el, opts))
@@ -127,7 +131,7 @@ module Kramdown
       end
 
       def convert_li(el, opts)
-        "\\item #{inner(el, opts).sub(/\n+\Z/, '')}\n"
+        "\\item #{latex_link_target(el, true)}#{inner(el, opts).sub(/\n+\Z/, '')}\n"
       end
 
       def convert_dt(el, opts)
@@ -135,16 +139,16 @@ module Kramdown
       end
 
       def convert_dd(el, opts)
-        "#{inner(el, opts)}\n\n"
+        "#{latex_link_target(el)}#{inner(el, opts)}\n\n"
       end
 
       def convert_html_element(el, opts)
-        if el.value == 'i'
+        if el.value == 'i' || el.value == 'em'
           "\\emph{#{inner(el, opts)}}"
-        elsif el.value == 'b'
-          "\\emph{#{inner(el, opts)}}"
+        elsif el.value == 'b' || el.value == 'strong'
+          "\\textbf{#{inner(el, opts)}}"
         else
-          @doc.warnings << "Can't convert HTML element"
+          warning("Can't convert HTML element")
           ''
         end
       end
@@ -154,16 +158,17 @@ module Kramdown
       end
 
       def convert_xml_pi(el, opts)
-        @doc.warnings << "Can't convert XML PI/HTML document type"
+        warning("Can't convert XML PI")
         ''
       end
-      alias :convert_html_doctype :convert_xml_pi
 
-      TABLE_ALIGNMENT_CHAR = {:default => 'l', :left => 'l', :center => 'c', :right => 'r'}
+      TABLE_ALIGNMENT_CHAR = {:default => 'l', :left => 'l', :center => 'c', :right => 'r'} # :nodoc:
 
       def convert_table(el, opts)
+        @data[:packages] << 'longtable'
         align = el.options[:alignment].map {|a| TABLE_ALIGNMENT_CHAR[a]}.join('|')
-        "\\begin{tabular}{|#{align}|}#{attribute_list(el)}\n\\hline\n#{inner(el, opts)}\\hline\n\\end{tabular}\n\n"
+        attrs = attribute_list(el)
+        "#{latex_link_target(el)}\\begin{longtable}{|#{align}|}#{attrs}\n\\hline\n#{inner(el, opts)}\\hline\n\\end{longtable}#{attrs}\n\n"
       end
 
       def convert_thead(el, opts)
@@ -179,63 +184,69 @@ module Kramdown
       end
 
       def convert_tr(el, opts)
-        el.children.map {|c| send("convert_#{c.type}", c, opts)}.join(' & ') + "\\\\\n"
+        el.children.map {|c| send("convert_#{c.type}", c, opts)}.join(' & ') << "\\\\\n"
       end
 
       def convert_td(el, opts)
         inner(el, opts)
       end
-      alias :convert_th :convert_td
 
       def convert_comment(el, opts)
-        el.value.split(/\n/).map {|l| "% #{l}"}.join("\n") + "\n"
+        el.value.split(/\n/).map {|l| "% #{l}"}.join("\n") << "\n"
       end
 
       def convert_br(el, opts)
-        "\\newline\n"
+        res = "\\newline"
+        res << "\n" if (c = opts[:parent].children[opts[:index]+1]) && (c.type != :text || c.value !~ /^\s*\n/)
+        res
       end
 
       def convert_a(el, opts)
-        url = el.options[:attr]['href']
-        if url =~ /^#/
-          "\\hyperlink{#{url[1..-1]}}{#{inner(el, opts)}}"
+        url = el.attr['href']
+        if url.start_with?('#')
+          "\\hyperlink{#{escape(url[1..-1])}}{#{inner(el, opts)}}"
         else
-          "\\href{#{url}}{#{inner(el, opts)}}"
+          "\\href{#{escape(url)}}{#{inner(el, opts)}}"
         end
       end
 
       def convert_img(el, opts)
-        if el.options[:attr]['src'] =~ /^(https?|ftps?):\/\//
-          @doc.warnings << "Cannot include non-local image"
+        line = el.options[:location]
+        if el.attr['src'] =~ /^(https?|ftps?):\/\//
+          warning("Cannot include non-local image#{line ? " (line #{line})" : ''}")
           ''
-        elsif !el.options[:attr]['src'].empty?
-          @doc.conversion_infos[:packages] << 'graphicx'
-          "\\includegraphics{#{el.options[:attr]['src']}}"
+        elsif !el.attr['src'].empty?
+          @data[:packages] << 'graphicx'
+          "#{latex_link_target(el)}\\includegraphics{#{el.attr['src']}}"
         else
-          @doc.warnings << "Cannot include image with empty path"
+          warning("Cannot include image with empty path#{line ? " (line #{line})" : ''}")
           ''
         end
       end
 
       def convert_codespan(el, opts)
-        "{\\tt #{escape(el.value)}}"
+        "{\\tt #{latex_link_target(el)}#{escape(el.value)}}"
       end
 
       def convert_footnote(el, opts)
-        @doc.conversion_infos[:packages] << 'fancyvrb'
-        "\\footnote{#{inner(@doc.parse_infos[:footnotes][el.options[:name]][:content], opts)}}"
+        @data[:packages] << 'fancyvrb'
+        "\\footnote{#{inner(el.value, opts).rstrip}}"
       end
 
       def convert_raw(el, opts)
-        escape(el.value)
+        if !el.options[:type] || el.options[:type].empty? || el.options[:type].include?('latex')
+          el.value + (el.options[:category] == :block ? "\n" : '')
+        else
+          ''
+        end
       end
 
       def convert_em(el, opts)
-        "\\emph{#{inner(el, opts)}}"
+        "\\emph{#{latex_link_target(el)}#{inner(el, opts)}}"
       end
 
       def convert_strong(el, opts)
-        "\\textbf{#{inner(el, opts)}}"
+        "\\textbf{#{latex_link_target(el)}#{inner(el, opts)}}"
       end
 
       # Inspired by Maruku: entity conversion table based on the one from htmltolatex
@@ -366,8 +377,8 @@ module Kramdown
         34 => ['"'],
         39 => ['\''],
         169 => ['\copyright'],
-        60 => ['\textless{}'],
-        62 => ['\textgreater{}'],
+        60 => ['\textless'],
+        62 => ['\textgreater'],
         338 => ['\OE'],
         339 => ['\oe'],
         352 => ['\v{S}'],
@@ -392,7 +403,7 @@ module Kramdown
         402 => ['\textflorin', 'mathcomp'],
         381 => ['\v{Z}'],
         382 => ['\v{z}'],
-        160 => ['\nolinebreak'],
+        160 => ['~'],
         161 => ['\textexclamdown'],
         163 => ['\pounds'],
         164 => ['\currency', 'wasysym'],
@@ -404,6 +415,7 @@ module Kramdown
         174 => ['\textregistered'],
         170 => ['\textordfeminine'],
         172 => ['$\neg$'],
+        173 => ['\-'],
         176 => ['$\degree$', 'mathabx'],
         177 => ['$\pm$'],
         180 => ['\''],
@@ -482,36 +494,44 @@ module Kramdown
         253 => ['\\\'y'],
         254 => ['\thorn', 'wasysym'],
         255 => ['\"y'],
-      }
-      ENTITY_CONV_TABLE.each {|k,v| ENTITY_CONV_TABLE[k] = v.unshift(v.shift + '{}')}
+        8201 => ['\thinspace'],
+        8194 => ['\hskip .5em\relax'],
+        8195 => ['\quad'],
+      } # :nodoc:
+      ENTITY_CONV_TABLE.each {|k,v| ENTITY_CONV_TABLE[k][0].insert(-1, '{}')}
 
-      def convert_entity(el, opts)
-        text, package = ENTITY_CONV_TABLE[el.value.code_point]
+      def entity_to_latex(entity)
+        text, package = ENTITY_CONV_TABLE[entity.code_point]
         if text
-          @doc.conversion_infos[:packages] << package if package
+          @data[:packages] << package if package
           text
         else
-          @doc.warnings << "Couldn't find entity in substitution table!"
+          warning("Couldn't find entity with code #{entity.code_point} in substitution table!")
           ''
         end
+      end
+
+      def convert_entity(el, opts)
+        entity_to_latex(el.value)
       end
 
       TYPOGRAPHIC_SYMS = {
         :mdash => '---', :ndash => '--', :hellip => '\ldots{}',
         :laquo_space => '\guillemotleft{}~', :raquo_space => '~\guillemotright{}',
         :laquo => '\guillemotleft{}', :raquo => '\guillemotright{}'
-      }
+      } # :nodoc:
       def convert_typographic_sym(el, opts)
         TYPOGRAPHIC_SYMS[el.value]
       end
 
-      SMART_QUOTE_SYMS = {:lsquo => '`', :rsquo => '\'', :ldquo => '``', :rdquo => '\'\''}
       def convert_smart_quote(el, opts)
-        SMART_QUOTE_SYMS[el.value]
+        res = entity_to_latex(smart_quote_entity(el)).chomp('{}')
+        res << "{}" if ((nel = opts[:parent].children[opts[:index]+1]) && nel.type == :smart_quote) || res =~ /\w$/
+        res
       end
 
       def convert_math(el, opts)
-        @doc.conversion_infos[:packages] += %w[amssymb amsmath amsthm amsfonts]
+        @data[:packages] += %w[amssymb amsmath amsthm amsfonts]
         if el.options[:category] == :block
           if el.value =~ /\A\s*\\begin\{/
             el.value
@@ -524,7 +544,39 @@ module Kramdown
       end
 
       def convert_abbreviation(el, opts)
-        el.value
+        @data[:packages] += %w[acronym]
+        "\\ac{#{normalize_abbreviation_key(el.value)}}"
+      end
+
+      # Normalize the abbreviation key so that it only contains allowed ASCII character
+      def normalize_abbreviation_key(key)
+        key.gsub(/\W/) {|m| m.unpack('H*').first}
+      end
+
+      # Wrap the +text+ inside a LaTeX environment of type +type+. The element +el+ is passed on to
+      # the method #attribute_list -- the resulting string is appended to both the \\begin and the
+      # \\end lines of the LaTeX environment for easier post-processing of LaTeX environments.
+      def latex_environment(type, el, text)
+        attrs = attribute_list(el)
+        "\\begin{#{type}}#{latex_link_target(el)}#{attrs}\n#{text.rstrip}\n\\end{#{type}}#{attrs}\n"
+      end
+
+      # Return a string containing a valid \hypertarget command if the element has an ID defined, or
+      # +nil+ otherwise. If the parameter +add_label+ is +true+, a \label command will also be used
+      # additionally to the \hypertarget command.
+      def latex_link_target(el, add_label = false)
+        if (id = el.attr['id'])
+          "\\hypertarget{#{id}}{}" << (add_label ? "\\label{#{id}}" : '')
+        else
+          nil
+        end
+      end
+
+      # Return a LaTeX comment containing all attributes as 'key="value"' pairs.
+      def attribute_list(el)
+        attrs = el.attr.map {|k,v| v.nil? ? '' : " #{k}=\"#{v.to_s}\""}.compact.sort.join('')
+        attrs = "   % #{attrs}" if !attrs.empty?
+        attrs
       end
 
       ESCAPE_MAP = {
@@ -534,17 +586,12 @@ module Kramdown
         "|"  => "\\textbar{}",
         "<"  => "\\textless{}",
         ">"  => "\\textgreater{}"
-      }.merge(Hash[*("{}$%&_#".scan(/./).map {|c| [c, "\\#{c}"]}.flatten)])
-      ESCAPE_RE = Regexp.union(*ESCAPE_MAP.collect {|k,v| k})
+      }.merge(Hash[*("{}$%&_#".scan(/./).map {|c| [c, "\\#{c}"]}.flatten)]) # :nodoc:
+      ESCAPE_RE = Regexp.union(*ESCAPE_MAP.collect {|k,v| k}) # :nodoc:
 
+      # Escape the special LaTeX characters in the string +str+.
       def escape(str)
         str.gsub(ESCAPE_RE) {|m| ESCAPE_MAP[m]}
-      end
-
-      def attribute_list(el)
-        attrs = (el.options[:attr] || {}).map {|k,v| v.nil? ? '' : " #{k}=\"#{v.to_s}\""}.compact.sort.join('')
-        attrs = "   % #{attrs}" if !attrs.empty?
-        attrs
       end
 
     end
